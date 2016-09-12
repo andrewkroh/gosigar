@@ -14,6 +14,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const linuxProcNetDev = `Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+vethf345468:     648       8    0    0    0     0          0         0      438       5    0    0    0     0       0          0
+    lo: 1662073845 1565671    0    0    0     0          0         0 1662073845 1565671    0    0    0     0       0          0
+docker0:    2568      38    0    0    0     0          0         0      438       5    0    0    0     0       0          0
+  eth0: 773180372  957853    0    0    0     0          0         0 558034279  676808    0    0    0     0       0          0`
+
+
 var procd string
 
 func setUp(t testing.TB) {

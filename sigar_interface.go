@@ -171,3 +171,20 @@ type ProcFDUsage struct {
 	SoftLimit uint64
 	HardLimit uint64
 }
+
+type NetworkStats struct {
+	Interfaces []InterfaceStats `json:"interfaces,omitempty"` // Network stats by interface.
+}
+
+type InterfaceStats struct {
+	Name      string `json:"name"`       // The name of the interface.
+	RxBytes   uint64 `json:"rx_bytes"`   // Cumulative count of bytes received.
+	RxPackets uint64 `json:"rx_packets"` // Cumulative count of packets received.
+	RxErrors  uint64 `json:"rx_errors"`  // Cumulative count of receive errors encountered.
+	RxDropped uint64 `json:"rx_dropped"` // Cumulative count of packets dropped while receiving.
+	TxBytes   uint64 `json:"tx_bytes"`   // Cumulative count of bytes transmitted.
+	TxPackets uint64 `json:"tx_packets"` // Cumulative count of packets transmitted.
+	TxErrors  uint64 `json:"tx_errors"`  // Cumulative count of transmit errors encountered.
+	TxDropped uint64 `json:"tx_dropped"` // Cumulative count of packets dropped while transmitting.
+}
+
