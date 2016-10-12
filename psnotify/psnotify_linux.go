@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"os"
 	"syscall"
+	"fmt"
 )
 
 const (
@@ -129,6 +130,7 @@ func (w *Watcher) readEvents() {
 		}
 
 		msgs, _ := syscall.ParseNetlinkMessage(buf[:nr])
+		fmt.Printf("netlink msgs: %+v\n", msgs)
 
 		for _, m := range msgs {
 			if m.Header.Type == syscall.NLMSG_DONE {
@@ -139,11 +141,13 @@ func (w *Watcher) readEvents() {
 }
 
 // Internal helper to check if pid && event is being watched
-func (w *Watcher) isWatching(pid int, event uint32) bool {
-	if watch, ok := w.watches[pid]; ok {
-		return (watch.flags & event) == event
+func (w *Watcher) isWatching(pid int, event uint32) *watch {
+	if watch, allProcs := w.watches[-1]; allProcs && (watch.flags & event) == event {
+		return watch
+	} else if watch, ok := w.watches[pid]; ok && (watch.flags & event) == event {
+		return watch
 	}
-	return false
+	return nil
 }
 
 // Dispatch events from the netlink socket to the Event channels.
@@ -163,30 +167,32 @@ func (w *Watcher) handleEvent(data []byte) {
 		binary.Read(buf, byteOrder, event)
 		ppid := int(event.ParentTgid)
 		pid := int(event.ChildTgid)
+		fmt.Printf("fork: %+v\n", event)
 
-		if w.isWatching(ppid, PROC_EVENT_EXEC) {
+		if watch := w.isWatching(ppid, PROC_EVENT_EXEC); watch != nil {
 			// follow forks
-			watch, _ := w.watches[ppid]
 			w.Watch(pid, watch.flags)
 		}
 
-		if w.isWatching(ppid, PROC_EVENT_FORK) {
-			w.Fork <- &ProcEventFork{ParentPid: ppid, ChildPid: pid}
+		if watch := w.isWatching(ppid, PROC_EVENT_FORK); watch != nil {
+			w.Fork <- &ProcEventFork{ParentPid: ppid, ChildPid: pid, ChildTgid: int(event.ChildTgid)}
 		}
 	case PROC_EVENT_EXEC:
 		event := &execProcEvent{}
 		binary.Read(buf, byteOrder, event)
 		pid := int(event.ProcessTgid)
+		fmt.Printf("exec: %+v\n", event)
 
-		if w.isWatching(pid, PROC_EVENT_EXEC) {
+		if watch := w.isWatching(pid, PROC_EVENT_EXEC); watch != nil {
 			w.Exec <- &ProcEventExec{Pid: pid}
 		}
 	case PROC_EVENT_EXIT:
 		event := &exitProcEvent{}
 		binary.Read(buf, byteOrder, event)
 		pid := int(event.ProcessTgid)
+		fmt.Printf("exit: %+v\n", event)
 
-		if w.isWatching(pid, PROC_EVENT_EXIT) {
+		if watch := w.isWatching(pid, PROC_EVENT_EXIT); watch != nil {
 			w.RemoveWatch(pid)
 			w.Exit <- &ProcEventExit{Pid: pid}
 		}

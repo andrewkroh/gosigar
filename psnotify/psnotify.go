@@ -10,6 +10,7 @@ import (
 type ProcEventFork struct {
 	ParentPid int // Pid of the process that called fork()
 	ChildPid  int // Child process pid created by fork()
+	ChildTgid  int // Thread group ID of the child created by fork().
 }
 
 type ProcEventExec struct {

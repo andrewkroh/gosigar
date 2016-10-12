@@ -133,7 +133,7 @@ func TestWatchFork(t *testing.T) {
 
 	// this fork event will be captured,
 	// the exec and exit events will not be captured
-	runCommand(t, "cal")
+	runCommand(t, "false")
 
 	tw.close()
 
@@ -237,7 +237,7 @@ func TestWatchFollowFork(t *testing.T) {
 		t.Error(err)
 	}
 
-	commands := []string{"date", "cal"}
+	commands := []string{"date", "false"}
 	childPids := make([]int, len(commands))
 
 	// triggers fork/exec/exit events for each command
