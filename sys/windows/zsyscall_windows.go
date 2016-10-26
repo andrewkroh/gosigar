@@ -10,6 +10,7 @@ var _ unsafe.Pointer
 var (
 	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
 	modpsapi    = syscall.NewLazyDLL("psapi.dll")
+	modntdll    = syscall.NewLazyDLL("ntdll.dll")
 
 	procGlobalMemoryStatusEx     = modkernel32.NewProc("GlobalMemoryStatusEx")
 	procGetLogicalDriveStringsW  = modkernel32.NewProc("GetLogicalDriveStringsW")
@@ -22,6 +23,7 @@ var (
 	procProcess32FirstW          = modkernel32.NewProc("Process32FirstW")
 	procProcess32NextW           = modkernel32.NewProc("Process32NextW")
 	procCreateToolhelp32Snapshot = modkernel32.NewProc("CreateToolhelp32Snapshot")
+	procNtQuerySystemInformation = modntdll.NewProc("NtQuerySystemInformation")
 )
 
 func _GlobalMemoryStatusEx(buffer *MemoryStatusEx) (err error) {
@@ -151,6 +153,19 @@ func _CreateToolhelp32Snapshot(flags uint32, processID uint32) (handle syscall.H
 	r0, _, e1 := syscall.Syscall(procCreateToolhelp32Snapshot.Addr(), 2, uintptr(flags), uintptr(processID), 0)
 	handle = syscall.Handle(r0)
 	if handle == 0 {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
+
+func _NtQuerySystemInformation(systemInformationClass uint32, systemInformation *byte, systemInformationLength uint32, returnLength *uint32) (ntstatus uint32, err error) {
+	r0, _, e1 := syscall.Syscall6(procNtQuerySystemInformation.Addr(), 4, uintptr(systemInformationClass), uintptr(unsafe.Pointer(systemInformation)), uintptr(systemInformationLength), uintptr(unsafe.Pointer(returnLength)), 0, 0)
+	ntstatus = uint32(r0)
+	if ntstatus == 0 {
 		if e1 != 0 {
 			err = error(e1)
 		} else {

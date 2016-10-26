@@ -52,7 +52,7 @@ func TestSwap(t *testing.T) {
 
 func TestCpuList(t *testing.T) {
 	cpuList := CpuList{}
-	if assert.NoError(t, skipNotImplemented(t, cpuList.Get(), "windows")) {
+	if assert.NoError(t, cpuList.Get()) {
 		numCore := len(cpuList.List)
 		numCpu := runtime.NumCPU()
 		assert.True(t, numCore >= numCpu, "Number of cores (%d) >= number of logical CPUs (%d)",

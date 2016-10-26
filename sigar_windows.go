@@ -64,7 +64,20 @@ func (self *LoadAverage) Get() error {
 }
 
 func (self *CpuList) Get() error {
-	return ErrNotImplemented{runtime.GOOS}
+	cpus, err := windows.NtQuerySystemProcessorPerformanceInformation()
+	if err != nil {
+		return errors.Wrap(err, "NtQuerySystemProcessorPerformanceInformation failed")
+	}
+
+	self.List = make([]Cpu, 0, len(cpus))
+	for _, cpu := range cpus {
+		self.List = append(self.List, Cpu{
+			Idle: uint64(cpu.IdleTime / time.Millisecond),
+			Sys:  uint64(cpu.KernelTime / time.Millisecond),
+			User: uint64(cpu.UserTime / time.Millisecond),
+		})
+	}
+	return nil
 }
 
 func (self *FDUsage) Get() error {

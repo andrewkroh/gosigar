@@ -1,6 +1,7 @@
 package windows
 
 import (
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -144,4 +145,21 @@ func TestCreateToolhelp32Snapshot(t *testing.T) {
 	}
 
 	assert.Fail(t, "Snapshot not found for PID=%v", pid)
+}
+
+func TestNtQuerySystemProcessorPerformanceInformation(t *testing.T) {
+	cpus, err := NtQuerySystemProcessorPerformanceInformation()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.Len(t, cpus, runtime.NumCPU())
+
+	for i, cpu := range cpus {
+		assert.NotZero(t, cpu.IdleTime)
+		assert.NotZero(t, cpu.KernelTime)
+		assert.NotZero(t, cpu.UserTime)
+
+		t.Logf("CPU=%v SystemProcessorPerformanceInformation=%v", i, cpu)
+	}
 }
