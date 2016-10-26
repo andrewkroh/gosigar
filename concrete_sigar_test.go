@@ -55,7 +55,6 @@ func TestConcreteGetMem(t *testing.T) {
 func TestConcreteGetSwap(t *testing.T) {
 	concreteSigar := &sigar.ConcreteSigar{}
 	swap, err := concreteSigar.GetSwap()
-	skipNotImplemented(t, err, "windows")
 	if assert.NoError(t, err) {
 		assert.True(t, swap.Used+swap.Free <= swap.Total)
 	}

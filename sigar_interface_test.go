@@ -43,7 +43,7 @@ func TestMem(t *testing.T) {
 
 func TestSwap(t *testing.T) {
 	swap := Swap{}
-	if assert.NoError(t, skipNotImplemented(t, swap.Get(), "windows")) {
+	if assert.NoError(t, swap.Get()) {
 		assert.True(t, (swap.Used+swap.Free) <= swap.Total,
 			"swap.Used (%d) + swap.Free (%d) must <= swap.Total (%d)",
 			swap.Used, swap.Free, swap.Total)

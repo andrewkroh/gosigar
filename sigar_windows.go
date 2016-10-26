@@ -63,10 +63,6 @@ func (self *LoadAverage) Get() error {
 	return ErrNotImplemented{runtime.GOOS}
 }
 
-func (self *Swap) Get() error {
-	return ErrNotImplemented{runtime.GOOS}
-}
-
 func (self *CpuList) Get() error {
 	return ErrNotImplemented{runtime.GOOS}
 }
@@ -104,6 +100,18 @@ func (self *Mem) Get() error {
 	self.Used = self.Total - self.Free
 	self.ActualFree = self.Free
 	self.ActualUsed = self.Used
+	return nil
+}
+
+func (self *Swap) Get() error {
+	memoryStatusEx, err := windows.GlobalMemoryStatusEx()
+	if err != nil {
+		return errors.Wrap(err, "GlobalMemoryStatusEx failed")
+	}
+
+	self.Total = memoryStatusEx.TotalPageFile
+	self.Free = memoryStatusEx.AvailPageFile
+	self.Used = self.Total - self.Free
 	return nil
 }
 
