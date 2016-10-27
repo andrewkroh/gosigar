@@ -5,6 +5,8 @@ package windows
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -30,6 +32,7 @@ const (
 	ERROR_NOT_ALL_ASSIGNED syscall.Errno = 1300
 )
 
+// Attribute bits for privileges.
 const (
 	_SE_PRIVILEGE_ENABLED_BY_DEFAULT uint32 = 0x00000001
 	_SE_PRIVILEGE_ENABLED            uint32 = 0x00000002
@@ -40,12 +43,12 @@ const (
 // Privilege contains information about a single privilege associated with a
 // Token.
 type Privilege struct {
-	LUID             int64 // Locally unique identifier (gauranteed only until the system is restarted).
-	Name             string
-	EnabledByDefault bool
-	Enabled          bool
-	Removed          bool
-	Used             bool
+	LUID             int64  `json:"-"` // Locally unique identifier (guaranteed only until the system is restarted).
+	Name             string `json:"-"`
+	EnabledByDefault bool   `json:"enabled_by_default,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Removed          bool   `json:"removed,omitempty"`
+	Used             bool   `json:"used,omitempty"`
 }
 
 func (p Privilege) String() string {
@@ -72,6 +75,8 @@ func (p Privilege) String() string {
 
 	buf.WriteString(strings.Join(opts, ", "))
 	buf.WriteString(")")
+
+	// Example: SeDebugPrivilege=(Default, Enabled)
 	return buf.String()
 }
 
@@ -83,13 +88,22 @@ type User struct {
 	Type    uint32
 }
 
+func (u User) String() string {
+	return fmt.Sprintf(`User:%v\%v, SID:%v, Type:%v`, u.Domain, u.Account, u.SID, u.Type)
+}
+
 // DebugInfo contains general debug info about the current process.
 type DebugInfo struct {
-	User         User                 // User that this process is running as.
-	ProcessPrivs map[string]Privilege // Privileges held by the process.
 	OSVersion    Version              // OS version info.
 	Arch         string               // Architecture of the machine.
 	NumCPU       int                  // Number of CPUs.
+	User         User                 // User that this process is running as.
+	ProcessPrivs map[string]Privilege // Privileges held by the process.
+}
+
+func (d DebugInfo) String() string {
+	bytes, _ := json.Marshal(d)
+	return string(bytes)
 }
 
 // LookupPrivilegeName looks up a privilege name given a LUID value.
