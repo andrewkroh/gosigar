@@ -17,8 +17,8 @@ type ProcessBasicInformation struct {
 	PebBaseAddress               uintptr
 	AffinityMask                 uint
 	BasePriority                 uint
-	UniqueProcessId              uint
-	InheritedFromUniqueProcessId uint
+	UniqueProcessID              uint
+	InheritedFromUniqueProcessID uint
 }
 
 // NtQueryProcessBasicInformation queries basic information about the process
@@ -29,9 +29,9 @@ func NtQueryProcessBasicInformation(handle syscall.Handle) (ProcessBasicInformat
 	var processBasicInfo ProcessBasicInformation
 	processBasicInfoPtr := (*byte)(unsafe.Pointer(&processBasicInfo))
 	size := uint32(unsafe.Sizeof(processBasicInfo))
-	ntstatus, _ := _NtQueryInformationProcess(handle, 0, processBasicInfoPtr, size, nil)
-	if ntstatus != 0 {
-		return ProcessBasicInformation{}, errors.Errorf("NtQueryInformationProcess failed, NTSTATUS=%0x%X", ntstatus)
+	ntStatus, _ := _NtQueryInformationProcess(handle, 0, processBasicInfoPtr, size, nil)
+	if ntStatus != 0 {
+		return ProcessBasicInformation{}, errors.Errorf("NtQueryInformationProcess failed, NTSTATUS=%0x%X", ntStatus)
 	}
 
 	return processBasicInfo, nil
@@ -79,9 +79,9 @@ func NtQuerySystemProcessorPerformanceInformation() ([]SystemProcessorPerformanc
 
 	// Query the performance information. Note that this function uses 0 to
 	// indicate success. Most other Windows functions use non-zero for success.
-	ntstatus, _ := _NtQuerySystemInformation(systemProcessorPerformanceInformation, cpuPerfInfoPtr, size, nil)
-	if ntstatus != STATUS_SUCCESS {
-		return nil, errors.Errorf("NtQuerySystemInformation failed, NTSTATUS=%0x%X", ntstatus)
+	ntStatus, _ := _NtQuerySystemInformation(systemProcessorPerformanceInformation, cpuPerfInfoPtr, size, nil)
+	if ntStatus != STATUS_SUCCESS {
+		return nil, errors.Errorf("NtQuerySystemInformation failed, NTSTATUS=%0x%X", ntStatus)
 	}
 
 	rtn := make([]SystemProcessorPerformanceInformation, 0, len(cpuPerfInfo))

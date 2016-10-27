@@ -63,23 +63,6 @@ func (self *LoadAverage) Get() error {
 	return ErrNotImplemented{runtime.GOOS}
 }
 
-func (self *CpuList) Get() error {
-	cpus, err := windows.NtQuerySystemProcessorPerformanceInformation()
-	if err != nil {
-		return errors.Wrap(err, "NtQuerySystemProcessorPerformanceInformation failed")
-	}
-
-	self.List = make([]Cpu, 0, len(cpus))
-	for _, cpu := range cpus {
-		self.List = append(self.List, Cpu{
-			Idle: uint64(cpu.IdleTime / time.Millisecond),
-			Sys:  uint64(cpu.KernelTime / time.Millisecond),
-			User: uint64(cpu.UserTime / time.Millisecond),
-		})
-	}
-	return nil
-}
-
 func (self *FDUsage) Get() error {
 	return ErrNotImplemented{runtime.GOOS}
 }
@@ -138,6 +121,23 @@ func (self *Cpu) Get() error {
 	self.Idle = uint64(idle / time.Millisecond)
 	self.Sys = uint64(kernel / time.Millisecond)
 	self.User = uint64(user / time.Millisecond)
+	return nil
+}
+
+func (self *CpuList) Get() error {
+	cpus, err := windows.NtQuerySystemProcessorPerformanceInformation()
+	if err != nil {
+		return errors.Wrap(err, "NtQuerySystemProcessorPerformanceInformation failed")
+	}
+
+	self.List = make([]Cpu, 0, len(cpus))
+	for _, cpu := range cpus {
+		self.List = append(self.List, Cpu{
+			Idle: uint64(cpu.IdleTime / time.Millisecond),
+			Sys:  uint64(cpu.KernelTime / time.Millisecond),
+			User: uint64(cpu.UserTime / time.Millisecond),
+		})
+	}
 	return nil
 }
 
@@ -247,27 +247,20 @@ func getProcStatus(pid int) (RunState, error) {
 	return RunStateSleep, nil
 }
 
-// getParentPid returns the parent process ID of a process. It requires the
-// calling process to have SeDebugPrivilege enabled.
+// getParentPid returns the parent process ID of a process.
 func getParentPid(pid int) (int, error) {
-	handle, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, uint32(pid))
+	handle, err := syscall.OpenProcess(processQueryLimitedInfoAccess, false, uint32(pid))
 	if err != nil {
-		return 0, errors.Wrapf(err, "CreateToolhelp32Snapshot failed for pid=%v", pid)
+		return RunStateUnknown, errors.Wrapf(err, "OpenProcess failed for pid=%v", pid)
 	}
-	defer syscall.CloseHandle(syscall.Handle(handle))
+	defer syscall.CloseHandle(handle)
 
-	for {
-		process, err := windows.Process32Next(handle)
-		if err != nil {
-			return 0, errors.Wrapf(err, "process snapshot not found for pid=%v", pid)
-		}
-
-		if process.ProcessID == uint32(pid) {
-			return int(process.ParentProcessID), nil
-		}
+	procInfo, err := windows.NtQueryProcessBasicInformation(handle)
+	if err != nil {
+		return 0, errors.Wrapf(err, "NtQueryProcessBasicInformation failed for pid=%v", pid)
 	}
 
-	return 0, errors.Errorf("process snapshot not found for pid=%v", pid)
+	return int(procInfo.InheritedFromUniqueProcessID), nil
 }
 
 func getProcCredName(pid int) (string, error) {
