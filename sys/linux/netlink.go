@@ -1,9 +1,118 @@
+// +build linux
+
 package linux
 
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sync/atomic"
+	"syscall"
 )
+
+// Generic Netlink Client
+
+type NetlinkSender interface {
+	Send(msg syscall.NetlinkMessage) (uint32, error)
+}
+
+type NetlinkReceiver interface {
+	Receive(nonBlocking bool, p NetlinkParser) ([]syscall.NetlinkMessage, error)
+}
+
+type NetlinkSendReceiver interface {
+	NetlinkSender
+	NetlinkReceiver
+}
+
+type NetlinkParser func([]byte) ([]syscall.NetlinkMessage, error)
+
+type NetlinkClient struct {
+	fd         int                      // File descriptor used for communication.
+	lsa        *syscall.SockaddrNetlink // Netlink local socket address.
+	seq        uint32                   // Sequence number used in outgoing messages.
+	readBuf    []byte
+	respWriter io.Writer
+}
+
+func NewNetlinkClient(proto int, readBuf []byte, resp io.Writer) (*NetlinkClient, error) {
+	s, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, proto)
+	if err != nil {
+		return nil, err
+	}
+
+	lsa := &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}
+	if err = syscall.Bind(s, lsa); err != nil {
+		syscall.Close(s)
+		return nil, err
+	}
+
+	if len(readBuf) == 0 {
+		// Default size used in libnl.
+		readBuf = make([]byte, os.Getpagesize())
+	}
+
+	return &NetlinkClient{
+		fd:         s,
+		lsa:        lsa,
+		readBuf:    readBuf,
+		respWriter: resp,
+	}, nil
+}
+
+func (c *NetlinkClient) Send(msg syscall.NetlinkMessage) (uint32, error) {
+	msg.Header.Seq = atomic.AddUint32(&c.seq, 1)
+	return msg.Header.Seq, syscall.Sendto(c.fd, serialize(msg), 0, c.lsa)
+}
+
+func (c *NetlinkClient) Receive(nonBlocking bool, p NetlinkParser) ([]syscall.NetlinkMessage, error) {
+	var flags int
+	if nonBlocking {
+		flags |= syscall.MSG_DONTWAIT
+	}
+
+	// XXX (akroh): A possible enhancement is to use the MSG_PEEK flag to
+	// check the message size and increase the buffer size to handle it all.
+	nr, from, err := syscall.Recvfrom(c.fd, c.readBuf, flags)
+	if err != nil {
+		// EAGAIN or EWOULDBLOCK will be returned for non-blocking reads where
+		// the read would normally have blocked.
+		return nil, err
+	}
+	if nr < syscall.NLMSG_HDRLEN {
+		return nil, syscall.EINVAL
+	}
+	fromNetlink, ok := from.(*syscall.SockaddrNetlink)
+	if ok && fromNetlink.Pid != 0 {
+		// Spoofed packet received on audit netlink socket.
+		return nil, syscall.EINVAL
+	}
+
+	buf := c.readBuf[:nr]
+
+	// Dump raw data for inspection purposes.
+	if c.respWriter != nil {
+		if _, err := c.respWriter.Write(buf); err != nil {
+			return nil, err
+		}
+	}
+
+	msgs, err := p(buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse netlink messages: %v", err)
+	}
+
+	return msgs, nil
+}
+
+// Close closes the netlink client's raw socket.
+func (c *NetlinkClient) Close() error {
+	return syscall.Close(c.fd)
+}
+
+// Netlink Error Code Handling
 
 // ParseNetlinkError parses the errno from the data section of a
 // syscall.NetlinkMessage. If netlinkData is less than 4 bytes an error
