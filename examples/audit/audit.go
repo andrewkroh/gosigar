@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -97,7 +98,12 @@ func read() error {
 				continue
 			}
 
-			log.WithField("event", auditMsg).Infof("Received record type %v", auditMsg.RecordType)
+			json, err := json.MarshalIndent(auditMsg, "", "  ")
+			if err != nil {
+				log.WithError(err).Warn("Failed to marshal event to JSON")
+			}
+
+			fmt.Println(string(json))
 		}
 	}
 
