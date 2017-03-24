@@ -5,96 +5,98 @@ package linux
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
-	"strconv"
+	"io"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
-//go:generate bash -c "go run mk_audit_msg_types.go && gofmt -w audit_msg_types.go"
-//go:generate bash -c "perl mk_audit_syscalls.pl > audit_syscalls.go && gofmt -w audit_syscalls.go"
-//go:generate perl mk_audit_arches.pl
-
 const (
+	// AuditMessageMaxLength is the maximum length of an audit message (data
+	// portion of a NetlinkMessage).
 	// https://github.com/linux-audit/audit-userspace/blob/990aa27ccd02f9743c4f4049887ab89678ab362a/lib/libaudit.h#L435
-	MAX_AUDIT_MESSAGE_LENGTH = 8970
+	AuditMessageMaxLength = 8970
 )
 
-var (
-	errInvalidAuditHeader = errors.New("invalid audit message header")
+// Audit command and control message types.
+const (
+	AuditGet uint16 = iota + 1000
+	AuditSet
 )
 
-type AuditMessage struct {
-	RecordType AuditMessageType // Record type from netlink header.
-	Timestamp  time.Time        // Timestamp parsed from payload in netlink message.
-	Sequence   int              // Sequence parsed from payload.
-	RawData    string           // Raw payload as a string.
+// AuditClient is a client for communicating with the Linux kernels audit
+// interface over netlink.
+type AuditClient struct {
+	netlink *NetlinkClient
 }
 
-func ParseAuditMessage(msg syscall.NetlinkMessage) (*AuditMessage, error) {
-	timestamp, seq, err := parseAuditHeader(msg.Data)
+// NewAuditClient creats a new AuditClient. The resp parameter is optional. If
+// provided resp will receive a copy of all data read from the netlink socket.
+// This is useful for debugging purposes.
+func NewAuditClient(resp io.Writer) (*AuditClient, error) {
+	buf := make([]byte, AuditMessageMaxLength)
+
+	netlink, err := NewNetlinkClient(syscall.AF_NETLINK, buf, resp)
 	if err != nil {
 		return nil, err
 	}
 
-	return &AuditMessage{
-		RecordType: AuditMessageType(msg.Header.Type),
-		Timestamp:  timestamp,
-		Sequence:   seq,
-		RawData:    string(msg.Data),
+	return &AuditClient{netlink: netlink}, nil
+}
+
+// SetPID sends a netlink message to the kernel telling it the PID of
+// netlink listener that should receive the audit messages.
+// https://github.com/linux-audit/audit-userspace/blob/990aa27ccd02f9743c4f4049887ab89678ab362a/lib/libaudit.c#L432-L464
+func (c *AuditClient) SetPID(pid int) error {
+	status := AuditStatus{
+		Mask: AuditStatusPID,
+		PID:  uint32(pid),
+	}
+
+	msg := syscall.NetlinkMessage{
+		Header: syscall.NlMsghdr{
+			Type:  AuditSet,
+			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
+		},
+		Data: status.toWireFormat(),
+	}
+
+	_, err := c.netlink.Send(msg)
+	// XXX: This should use sequence number to look for an ACK to our message.
+	return err
+}
+
+// RawAuditMessage is a raw audit message received from the kernel.
+type RawAuditMessage struct {
+	MessageType uint16
+	RawData     []byte // RawData is backed by the read buffer so make a copy.
+}
+
+// Receive reads an audit message from the netlink socket. If you are going to
+// use the returned message then you should make a copy of the raw data before
+// calling receive again because the raw data is backed by the read buffer.
+func (c *AuditClient) Receive(nonBlocking bool) (*RawAuditMessage, error) {
+	msgs, err := c.netlink.Receive(nonBlocking, parseNetlinkAuditMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	// ParseNetlinkAuditMessage always return a slice with 1 item.
+	return &RawAuditMessage{
+		MessageType: msgs[0].Header.Type,
+		RawData:     msgs[0].Data,
 	}, nil
 }
 
-// parseAuditHeader parses the timestamp and sequence number from the audit
-// message header that has the form of "audit(1490137971.011:50406):".
-func parseAuditHeader(line []byte) (time.Time, int, error) {
-	// Find tokens.
-	start := bytes.IndexRune(line, '(')
-	if start == -1 {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	dot := bytes.IndexRune(line[start:], '.')
-	if dot == -1 {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	dot += start
-	sep := bytes.IndexRune(line[dot:], ':')
-	if sep == -1 {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	sep += dot
-	end := bytes.IndexRune(line[sep:], ')')
-	if end == -1 {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	end += sep
-
-	// Parse timestamp.
-	sec, err := strconv.ParseInt(string(line[start+1:dot]), 10, 64)
-	if err != nil {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	msec, err := strconv.ParseInt(string(line[dot+1:sep]), 10, 64)
-	if err != nil {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-	tm := time.Unix(sec, msec*int64(time.Millisecond))
-
-	// Parse sequence.
-	sequence, err := strconv.Atoi(string(line[sep+1 : end]))
-	if err != nil {
-		return time.Time{}, 0, errInvalidAuditHeader
-	}
-
-	return tm, sequence, nil
+// Close closes the AuditClient and frees any associated resources.
+func (c *AuditClient) Close() error {
+	return c.netlink.Close()
 }
 
-// ParseNetlinkAuditMessage parses an audit message received from the kernel.
+// parseNetlinkAuditMessage parses an audit message received from the kernel.
 // Audit messages differ significantly from typical netlink messages in that
 // a single message is sent and the length in the header should be ignored.
 // This is why syscall.ParseNetlinkMessage is not used.
-func ParseNetlinkAuditMessage(buf []byte) ([]syscall.NetlinkMessage, error) {
+func parseNetlinkAuditMessage(buf []byte) ([]syscall.NetlinkMessage, error) {
 	if len(buf) < syscall.NLMSG_HDRLEN {
 		return nil, syscall.EINVAL
 	}
@@ -109,33 +111,13 @@ func ParseNetlinkAuditMessage(buf []byte) ([]syscall.NetlinkMessage, error) {
 	return []syscall.NetlinkMessage{m}, nil
 }
 
-// AuditSetPID sends a netlink message to the kernel telling it the PID of
-// netlink listener that should receive the audit messages.
-// https://github.com/linux-audit/audit-userspace/blob/990aa27ccd02f9743c4f4049887ab89678ab362a/lib/libaudit.c#L432-L464
-func AuditSetPID(client NetlinkSendReceiver, pid int) error {
-	status := AuditStatus{
-		Mask: AuditStatusPID,
-		PID:  uint32(pid),
-	}
+// audit_status message
 
-	msg := syscall.NetlinkMessage{
-		Header: syscall.NlMsghdr{
-			Type:  uint16(AUDIT_SET),
-			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
-		},
-		Data: status.ToWireFormat(),
-	}
-
-	_, err := client.Send(msg)
-	// XXX: This should use sequence number to look for an ACK to our message.
-	return err
-}
-
-// audit_status
-
+// AuditStatusMask is a bitmask used to convey the fields used in AuditStatus.
 // https://github.com/linux-audit/audit-kernel/blob/v4.7/include/uapi/linux/audit.h#L318-L325
 type AuditStatusMask uint32
 
+// Mask types for AuditStatus.
 const (
 	AuditStatusEnabled AuditStatusMask = 1 << iota
 	AuditStatusFailure
@@ -147,6 +129,8 @@ const (
 
 var sizeofAuditStatus = int(unsafe.Sizeof(AuditStatus{}))
 
+// AuditStatus is a status message and command and control message exchanged
+// between the kernel and user-space.
 // https://github.com/linux-audit/audit-kernel/blob/v4.7/include/uapi/linux/audit.h#L413-L427
 type AuditStatus struct {
 	Mask            AuditStatusMask // Bit mask for valid entries.
@@ -161,7 +145,7 @@ type AuditStatus struct {
 	BacklogWaitTime uint32          // Message queue wait timeout.
 }
 
-func (s AuditStatus) ToWireFormat() []byte {
+func (s AuditStatus) toWireFormat() []byte {
 	buf := bytes.NewBuffer(make([]byte, sizeofInetDiagReqV2))
 	buf.Reset()
 	if err := binary.Write(buf, binary.LittleEndian, s); err != nil {
@@ -169,4 +153,9 @@ func (s AuditStatus) ToWireFormat() []byte {
 		panic(err)
 	}
 	return buf.Bytes()
+}
+
+func (s *AuditStatus) fromWireFormat(buf []byte) error {
+	r := bytes.NewReader(buf)
+	return binary.Read(r, binary.LittleEndian, s)
 }

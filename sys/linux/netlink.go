@@ -14,21 +14,31 @@ import (
 
 // Generic Netlink Client
 
+// NetlinkSender sends a netlink message and returns the sequence number used
+// in the message and an error if it occurred.
 type NetlinkSender interface {
 	Send(msg syscall.NetlinkMessage) (uint32, error)
 }
 
+// NetlinkReceiver receives data from the netlink socket and uses the provided
+// parser to convert the raw bytes to NetlinkMessages. For most uses cases
+// syscall.ParseNetlinkMessage should be used. If nonBlocking is true then
+// instead of blocking when no data is available, EWOULDBLOCK is returned.
 type NetlinkReceiver interface {
 	Receive(nonBlocking bool, p NetlinkParser) ([]syscall.NetlinkMessage, error)
 }
 
+// NetlinkSendReceiver combines the Send and Receive into one interface.
 type NetlinkSendReceiver interface {
 	NetlinkSender
 	NetlinkReceiver
 }
 
+// NetlinkParser parses the raw bytes read from the netlink socket into
+// netlink messages.
 type NetlinkParser func([]byte) ([]syscall.NetlinkMessage, error)
 
+// NetlinkClient is a generic client for sending and receiving netlink messages.
 type NetlinkClient struct {
 	fd         int                      // File descriptor used for communication.
 	lsa        *syscall.SockaddrNetlink // Netlink local socket address.
@@ -37,6 +47,14 @@ type NetlinkClient struct {
 	respWriter io.Writer
 }
 
+// NewNetlinkClient creates a new NetlinkClient. It creates a socket and binds
+// it. readBuf is an optional byte buffer used for reading data from the socket.
+// The size of the buffer limits the maximum message size the can be read. If no
+// buffer is provided one will be allocated using the OS page size. resp is
+// optional and can be used to receive a copy of all bytes read from the socket
+// (this is useful for debugging).
+//
+// The returned NetlinkClient must be closed with Close() when finished.
 func NewNetlinkClient(proto int, readBuf []byte, resp io.Writer) (*NetlinkClient, error) {
 	s, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, proto)
 	if err != nil {
@@ -62,11 +80,15 @@ func NewNetlinkClient(proto int, readBuf []byte, resp io.Writer) (*NetlinkClient
 	}, nil
 }
 
+// Send sends a netlink message and returns the sequence number used
+// in the message and an error if it occurred.
 func (c *NetlinkClient) Send(msg syscall.NetlinkMessage) (uint32, error) {
 	msg.Header.Seq = atomic.AddUint32(&c.seq, 1)
 	return msg.Header.Seq, syscall.Sendto(c.fd, serialize(msg), 0, c.lsa)
 }
 
+// Receive receives data from the netlink socket and uses the provided
+// parser to convert the raw bytes to NetlinkMessages. See NetlinkReceiver docs.
 func (c *NetlinkClient) Receive(nonBlocking bool, p NetlinkParser) ([]syscall.NetlinkMessage, error) {
 	var flags int
 	if nonBlocking {

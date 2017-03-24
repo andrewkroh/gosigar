@@ -19,7 +19,7 @@ import (
 var (
 	fs      = flag.NewFlagSet("auditd", flag.ExitOnError)
 	debug   = fs.Bool("d", false, "enable debug output to stderr")
-	bufSize = fs.Int("buf", linux.MAX_AUDIT_MESSAGE_LENGTH, "netlink receive buffer size")
+	bufSize = fs.Int("buf", linux.AuditMessageMaxLength, "netlink receive buffer size")
 	diag    = fs.String("diag", "", "dump raw information from kernel to file")
 )
 
