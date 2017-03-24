@@ -43,6 +43,20 @@ func NewAuditClient(resp io.Writer) (*AuditClient, error) {
 	return &AuditClient{netlink: netlink}, nil
 }
 
+func (c *AuditClient) GetStatus() error {
+	status := AuditStatus{}
+	msg := syscall.NetlinkMessage{
+		Header: syscall.NlMsghdr{
+			Type:  AuditSet,
+			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
+		},
+		Data: status.toWireFormat(),
+	}
+
+	_, err := c.netlink.Send(msg)
+	return err
+}
+
 // SetPID sends a netlink message to the kernel telling it the PID of
 // netlink listener that should receive the audit messages.
 // https://github.com/linux-audit/audit-userspace/blob/990aa27ccd02f9743c4f4049887ab89678ab362a/lib/libaudit.c#L432-L464
