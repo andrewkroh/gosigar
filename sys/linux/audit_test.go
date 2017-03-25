@@ -6,6 +6,7 @@ import (
 	"testing"
 	"fmt"
 	"encoding/binary"
+	"encoding/hex"
 )
 
 func TestAuditClientGetStatus(t *testing.T) {
@@ -37,7 +38,10 @@ func TestAuditClientGetStatus(t *testing.T) {
 }
 
 func TestAuditClientSetPID(t *testing.T) {
-	c, err := NewAuditClient(nil)
+	stdoutDumper := hex.Dumper(os.Stdout)
+	defer stdoutDumper.Close()
+
+	c, err := NewAuditClient(stdoutDumper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +52,7 @@ func TestAuditClientSetPID(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	//time.Sleep(5000 * time.Second)
 	//m, err := c.Receive(false)
 	//if err != nil {
 	//	t.Fatal(err)
@@ -66,16 +71,9 @@ func TestAuditClientSetPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(msgs) == 0 {
-		t.Fatal("expected to receive a message")
-	}
-
-	msgs, err = auditGetReply(msgs, 1, true)
-	if err != nil {
-		t.Fatal(err)
+		t.Fatal("expected at least one message")
 	}
 	msg := msgs[0]
-
-
 
 	t.Logf("%+v", msg)
 

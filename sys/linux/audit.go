@@ -35,7 +35,7 @@ type AuditClient struct {
 func NewAuditClient(resp io.Writer) (*AuditClient, error) {
 	buf := make([]byte, AuditMessageMaxLength)
 
-	netlink, err := NewNetlinkClient(syscall.AF_NETLINK, buf, resp)
+	netlink, err := NewNetlinkClient(syscall.NETLINK_AUDIT, buf, resp)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +63,7 @@ func (c *AuditClient) GetStatus() error {
 func (c *AuditClient) SetPID(pid int) error {
 	status := AuditStatus{
 		Mask: AuditStatusPID,
+		Enabled: 1,
 		PID:  uint32(pid),
 	}
 
@@ -70,6 +71,7 @@ func (c *AuditClient) SetPID(pid int) error {
 		Header: syscall.NlMsghdr{
 			Type:  AuditSet,
 			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
+			Pid: uint32(pid),
 		},
 		Data: status.toWireFormat(),
 	}

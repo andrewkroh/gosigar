@@ -40,9 +40,9 @@ type NetlinkParser func([]byte) ([]syscall.NetlinkMessage, error)
 
 // NetlinkClient is a generic client for sending and receiving netlink messages.
 type NetlinkClient struct {
-	fd         int                      // File descriptor used for communication.
-	lsa        *syscall.SockaddrNetlink // Netlink local socket address.
-	seq        uint32                   // Sequence number used in outgoing messages.
+	fd         int               // File descriptor used for communication.
+	lsa        syscall.Sockaddr // Local socket address.
+	seq        uint32            // Sequence number used in outgoing messages.
 	readBuf    []byte
 	respWriter io.Writer
 }
