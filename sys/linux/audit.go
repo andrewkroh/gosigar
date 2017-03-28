@@ -5,7 +5,6 @@ package linux
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"syscall"
 	"time"
@@ -65,19 +64,19 @@ func (c *AuditClient) GetStatus() (*AuditStatus, error) {
 	// Get the ack message which is a NLMSG_ERROR type whose error code is SUCCESS.
 	ack, err := c.getReply(seq)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to get audit status ack")
 	}
-	fmt.Printf("ACK: %+v\n", ack)
 
 	if ack.Header.Type != syscall.NLMSG_ERROR {
 		return nil, errors.Errorf("unexpected ACK to GET, type=%d", ack.Header.Type)
 	}
 
 	if err := ParseNetlinkError(ack.Data); err != NLE_SUCCESS {
-		if len(ack.Data) >= 16 {
-			// Read the third int, its the failure code.
-			errno := syscall.Errno(binary.LittleEndian.Uint32(ack.Data[3*4:]))
-			return nil, errno
+		if len(ack.Data) >= 4+12 {
+			status := &AuditStatus{}
+			if err := status.fromWireFormat(ack.Data[4:]); err == nil {
+				return nil, syscall.Errno(status.Failure)
+			}
 		}
 		return nil, err
 	}
@@ -86,9 +85,8 @@ func (c *AuditClient) GetStatus() (*AuditStatus, error) {
 	// our original request.
 	reply, err := c.getReply(seq)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to get audit status reply")
 	}
-	fmt.Printf("REPLY: %+v\n", reply)
 
 	if reply.Header.Type != AuditGet {
 		return nil, errors.Errorf("unexpected reply to GET, type%d", reply.Header.Type)
@@ -96,15 +94,15 @@ func (c *AuditClient) GetStatus() (*AuditStatus, error) {
 
 	replyStatus := &AuditStatus{}
 	if err := replyStatus.fromWireFormat(reply.Data); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to unmarshal reply")
 	}
 
 	return replyStatus, nil
 }
 
 // getReply reads from the netlink socket and find the message with the given
-// sequence number. Any non-matching messages are dropped. The caller should
-// inspect the returned message's type, flags, and error code.
+// sequence number. The caller should inspect the returned message's type,
+// flags, and error code.
 func (c *AuditClient) getReply(seq uint32) (*syscall.NetlinkMessage, error) {
 	var msgs []syscall.NetlinkMessage
 	var err error
@@ -127,23 +125,15 @@ func (c *AuditClient) getReply(seq uint32) (*syscall.NetlinkMessage, error) {
 		break
 	}
 
-	var rtn *syscall.NetlinkMessage
-	for i, msg := range msgs {
-		// Find matching sequence number.
-		if msg.Header.Seq == seq {
-			//return &msg, nil
-			rtn = &msg
-		}
-		fmt.Printf("resp %d: %+v\n", i, msg)
-	}
-	if rtn != nil {
-		return rtn, nil
+	if len(msgs) == 0 || msgs[0].Header.Seq != seq {
+		return nil, errors.New("no reply received")
 	}
 
-	return nil, errors.New("no reply received")
+	msg := msgs[0]
+	return &msg, nil
 }
 
-func (c *AuditClient) Set(status AuditStatus) error {
+func (c *AuditClient) set(status AuditStatus) error {
 	msg := syscall.NetlinkMessage{
 		Header: syscall.NlMsghdr{
 			Type:  AuditSet,
@@ -157,30 +147,26 @@ func (c *AuditClient) Set(status AuditStatus) error {
 		return errors.Wrap(err, "failed sending request")
 	}
 
-	reply, err := c.getReply(seq)
+	ack, err := c.getReply(seq)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("reply: %+v\n", reply)
+	if ack.Header.Type != syscall.NLMSG_ERROR {
+		return errors.Errorf("unexpected ACK to SET, type=%d", ack.Header.Type)
+	}
 
-	if reply.Header.Type == syscall.NLMSG_ERROR {
-		err := ParseNetlinkError(reply.Data)
-		if err == NLE_SUCCESS {
-			return nil
-		}
-
-		if len(reply.Data) > sizeofAuditStatus {
-			replyStatus := &AuditStatus{}
-			replyStatus.fromWireFormat(reply.Data[4:])
-			fmt.Printf("%+v\n", replyStatus)
-			fmt.Println("failure:", syscall.Errno(replyStatus.Failure))
-			return syscall.Errno(replyStatus.Failure)
+	if err := ParseNetlinkError(ack.Data); err != NLE_SUCCESS {
+		if len(ack.Data) >= 4+12 {
+			status := &AuditStatus{}
+			if err := status.fromWireFormat(ack.Data[4:]); err == nil {
+				return syscall.Errno(status.Failure)
+			}
 		}
 		return err
 	}
 
-	return errors.Errorf("invalid response, bad type %d", reply.Header.Type)
+	return nil
 }
 
 // SetPID sends a netlink message to the kernel telling it the PID of
@@ -197,7 +183,7 @@ func (c *AuditClient) SetPID(pid int) error {
 		Enabled: 1,
 		PID:     netlinkPID,
 	}
-	return c.Set(status)
+	return c.set(status)
 }
 
 // RawAuditMessage is a raw audit message received from the kernel.
@@ -290,7 +276,38 @@ func (s AuditStatus) toWireFormat() []byte {
 	return buf.Bytes()
 }
 
+// fromWireFormat unmarshals the given buffer to an AuditStatus object. Due to
+// changes in the audit_status struct in the kernel source this method does
+// not return an error if the buffer is smaller than the sizeof our AuditStatus
+// struct.
 func (s *AuditStatus) fromWireFormat(buf []byte) error {
+	fields := []interface{}{
+		&s.Mask,
+		&s.Enabled,
+		&s.Failure,
+		&s.PID,
+		&s.RateLimit,
+		&s.BacklogLimit,
+		&s.Lost,
+		&s.Backlog,
+		&s.FeatureBitmap,
+		&s.BacklogWaitTime,
+	}
+
+	if len(buf) == 0 {
+		return io.EOF
+	}
+
 	r := bytes.NewReader(buf)
-	return binary.Read(r, binary.LittleEndian, s)
+	for _, f := range fields {
+		if r.Len() == 0 {
+			return nil
+		}
+
+		if err := binary.Read(r, binary.LittleEndian, f); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

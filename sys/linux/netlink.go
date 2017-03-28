@@ -145,7 +145,6 @@ func (c *NetlinkClient) Receive(nonBlocking bool, p NetlinkParser) ([]syscall.Ne
 	}
 
 	buf := c.readBuf[:nr]
-	fmt.Println("socket read:", nr)
 
 	// Dump raw data for inspection purposes.
 	if c.respWriter != nil {

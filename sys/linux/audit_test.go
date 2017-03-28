@@ -1,3 +1,5 @@
+// +build linux
+
 package linux
 
 import (
@@ -13,10 +15,8 @@ import (
 
 var hexdump = flag.Bool("hexdump", false, "dump kernel responses to stdout in hexdump -C format")
 
-var euid = os.Geteuid()
-
 func TestAuditClientGetStatus(t *testing.T) {
-	if euid != 0 {
+	if os.Geteuid() != 0 {
 		t.Skip("must be root to get audit status")
 	}
 
@@ -29,13 +29,8 @@ func TestAuditClientGetStatus(t *testing.T) {
 }
 
 func TestAuditClientGetStatusPermissionError(t *testing.T) {
-	euid := os.Geteuid()
-	if euid == 0 {
-		// Drop privs.
-		if err := syscall.Setuid(1000); err != nil {
-			t.Fatal(err)
-		}
-		defer syscall.Setuid(euid)
+	if os.Geteuid() == 0 {
+		t.Skip("must be non-root to test permission failure")
 	}
 
 	status, err := getStatus(t)
@@ -60,6 +55,10 @@ func getStatus(t testing.TB) (*AuditStatus, error) {
 }
 
 func TestAuditClientSetPID(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("must be root to set audit port id")
+	}
+
 	var dumper io.WriteCloser
 	if *hexdump {
 		dumper = hex.Dumper(os.Stdout)
