@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -19,7 +18,6 @@ import (
 var (
 	fs      = flag.NewFlagSet("auditd", flag.ExitOnError)
 	debug   = fs.Bool("d", false, "enable debug output to stderr")
-	bufSize = fs.Int("buf", linux.AuditMessageMaxLength, "netlink receive buffer size")
 	diag    = fs.String("diag", "", "dump raw information from kernel to file")
 )
 
@@ -62,49 +60,42 @@ func read() error {
 		diagWriter = f
 	}
 
-	var readBuf []byte
-	if *bufSize > 0 {
-		readBuf = make([]byte, *bufSize)
-	}
-
 	log.Debugln("starting netlink client")
-	client, err := linux.NewNetlinkClient(syscall.NETLINK_AUDIT, readBuf, diagWriter)
+	client, err := linux.NewAuditClient(diagWriter)
 	if err != nil {
 		return err
 	}
 
 	log.Debugln("sending message to kernel registering our PID as the audit daemon")
-	if err = linux.AuditSetPID(client, os.Getpid()); err != nil {
+	if err = client.SetPID(0); err != nil {
 		return errors.Wrap(err, "failed to set audit PID")
 	}
 
 	for {
-		msgs, err := client.Receive(false, linux.ParseNetlinkAuditMessage)
+		m, err := client.Receive(false)
 		if err != nil {
 			return errors.Wrap(err, "receive failed")
 		}
 
-		for _, m := range msgs {
-			if m.Header.Type < 1300 || m.Header.Type >= 2100 {
-				continue
-			}
-
-			auditMsg, err := linux.ParseAuditMessage(m)
-			if err != nil {
-				log.WithError(err).Error("Failed to parse audit message")
-			}
-
-			if auditMsg.RecordType == linux.AUDIT_EOE {
-				continue
-			}
-
-			json, err := json.MarshalIndent(auditMsg, "", "  ")
-			if err != nil {
-				log.WithError(err).Warn("Failed to marshal event to JSON")
-			}
-
-			fmt.Println(string(json))
+		if m.MessageType < 1300 || m.MessageType >= 2100 {
+			continue
 		}
+
+		// Ignore AUDIT_EOE.
+		if m.MessageType == 1320 {
+			continue
+		}
+
+		event := map[string]interface{}{
+			"type": m.MessageType,
+			"msg":  string(m.RawData),
+		}
+		json, err := json.MarshalIndent(event, "", "  ")
+		if err != nil {
+			log.WithError(err).Warn("Failed to marshal event to JSON")
+		}
+
+		fmt.Println(string(json))
 	}
 
 	return nil

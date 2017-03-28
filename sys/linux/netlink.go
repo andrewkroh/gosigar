@@ -40,9 +40,11 @@ type NetlinkParser func([]byte) ([]syscall.NetlinkMessage, error)
 
 // NetlinkClient is a generic client for sending and receiving netlink messages.
 type NetlinkClient struct {
-	fd         int               // File descriptor used for communication.
-	lsa        syscall.Sockaddr // Local socket address.
-	seq        uint32            // Sequence number used in outgoing messages.
+	fd         int              // File descriptor used for communication.
+	src        syscall.Sockaddr // Local socket address.
+	dest       syscall.Sockaddr // Remote socket address (client assumes the dest is the kernel).
+	pid        uint32           // Port ID of the local socket.
+	seq        uint32           // Sequence number used in outgoing messages.
 	readBuf    []byte
 	respWriter io.Writer
 }
@@ -61,9 +63,14 @@ func NewNetlinkClient(proto int, readBuf []byte, resp io.Writer) (*NetlinkClient
 		return nil, err
 	}
 
-	lsa := &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}
-	if err = syscall.Bind(s, lsa); err != nil {
+	src := &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}
+	if err = syscall.Bind(s, src); err != nil {
 		syscall.Close(s)
+		return nil, err
+	}
+
+	pid, err := getPID(s)
+	if err != nil {
 		return nil, err
 	}
 
@@ -74,17 +81,42 @@ func NewNetlinkClient(proto int, readBuf []byte, resp io.Writer) (*NetlinkClient
 
 	return &NetlinkClient{
 		fd:         s,
-		lsa:        lsa,
+		src:        src,
+		dest:       &syscall.SockaddrNetlink{},
+		pid:        pid,
 		readBuf:    readBuf,
 		respWriter: resp,
 	}, nil
 }
 
+// getPID gets the kernel assigned PID of the local netlink socket. The kernel
+// assigns the processes PID to the first socket then assigns arbitrary values
+// to any follow-on sockets. See man netlink for details.
+func getPID(fd int) (uint32, error) {
+	address, err := syscall.Getsockname(fd)
+	if err != nil {
+		return 0, err
+	}
+
+	addr, ok := address.(*syscall.SockaddrNetlink)
+	if !ok {
+		return 0, errors.New("unexpected socket address type")
+	}
+
+	return addr.Pid, nil
+}
+
 // Send sends a netlink message and returns the sequence number used
-// in the message and an error if it occurred.
+// in the message and an error if it occurred. If the PID is not set then
+// the value will be populated automatically (recommended).
 func (c *NetlinkClient) Send(msg syscall.NetlinkMessage) (uint32, error) {
+	if msg.Header.Pid == 0 {
+		msg.Header.Pid = c.pid
+	}
+
 	msg.Header.Seq = atomic.AddUint32(&c.seq, 1)
-	return msg.Header.Seq, syscall.Sendto(c.fd, serialize(msg), 0, c.lsa)
+	to := &syscall.SockaddrNetlink{}
+	return msg.Header.Seq, syscall.Sendto(c.fd, serialize(msg), 0, to)
 }
 
 // Receive receives data from the netlink socket and uses the provided
@@ -107,7 +139,7 @@ func (c *NetlinkClient) Receive(nonBlocking bool, p NetlinkParser) ([]syscall.Ne
 		return nil, syscall.EINVAL
 	}
 	fromNetlink, ok := from.(*syscall.SockaddrNetlink)
-	if ok && fromNetlink.Pid != 0 {
+	if !ok || fromNetlink.Pid != 0 {
 		// Spoofed packet received on audit netlink socket.
 		return nil, syscall.EINVAL
 	}

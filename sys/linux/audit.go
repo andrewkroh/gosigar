@@ -5,9 +5,13 @@ package linux
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"syscall"
+	"time"
 	"unsafe"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -29,7 +33,7 @@ type AuditClient struct {
 	netlink *NetlinkClient
 }
 
-// NewAuditClient creats a new AuditClient. The resp parameter is optional. If
+// NewAuditClient creates a new AuditClient. The resp parameter is optional. If
 // provided resp will receive a copy of all data read from the netlink socket.
 // This is useful for debugging purposes.
 func NewAuditClient(resp io.Writer) (*AuditClient, error) {
@@ -43,8 +47,76 @@ func NewAuditClient(resp io.Writer) (*AuditClient, error) {
 	return &AuditClient{netlink: netlink}, nil
 }
 
-func (c *AuditClient) GetStatus() error {
-	status := AuditStatus{}
+func (c *AuditClient) GetStatus() (*AuditStatus, error) {
+	msg := syscall.NetlinkMessage{
+		Header: syscall.NlMsghdr{
+			Type:  AuditGet,
+			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
+		},
+		Data: nil,
+	}
+
+	seq, err := c.netlink.Send(msg)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed sending request")
+	}
+
+	reply, err := c.getReply(seq)
+	if err != nil {
+		return nil, err
+	}
+
+	if reply.Header.Flags != (syscall.NLM_F_REQUEST | syscall.NLM_F_ACK) {
+		return nil, errors.Errorf("invalid response, bad header flags 0x%X", reply.Header.Flags)
+	}
+
+	if reply.Header.Type == syscall.NLMSG_ERROR {
+		err := ParseNetlinkError(reply.Data)
+		if err == NLE_SUCCESS {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return nil, errors.Errorf("invalid response, bad type %d", reply.Header.Type)
+}
+
+// getReply reads from the netlink socket and find the message with the given
+// sequence number. Any non-matching messages are dropped. The caller should
+// inspect the returned message's type, flags, and error code.
+func (c *AuditClient) getReply(seq uint32) (*syscall.NetlinkMessage, error) {
+	var msgs []syscall.NetlinkMessage
+	var err error
+
+	// Retry the non-blocking read multiple times until a response is received.
+	for i := 0; i < 10; i++ {
+		msgs, err = c.netlink.Receive(true, syscall.ParseNetlinkMessage)
+		if err != nil {
+			switch err {
+			case syscall.EINTR:
+				continue
+			case syscall.EAGAIN:
+				time.Sleep(50 * time.Millisecond)
+				continue
+			default:
+				return nil, errors.Wrap(err, "error receiving audit netlink packet")
+			}
+		}
+
+		break
+	}
+
+	for _, msg := range msgs {
+		// Find matching sequence number.
+		if msg.Header.Seq == seq {
+			return &msg, nil
+		}
+	}
+
+	return nil, errors.New("no reply received")
+}
+
+func (c *AuditClient) Set(status AuditStatus) error {
 	msg := syscall.NetlinkMessage{
 		Header: syscall.NlMsghdr{
 			Type:  AuditSet,
@@ -53,32 +125,52 @@ func (c *AuditClient) GetStatus() error {
 		Data: status.toWireFormat(),
 	}
 
-	_, err := c.netlink.Send(msg)
-	return err
+	seq, err := c.netlink.Send(msg)
+	if err != nil {
+		return errors.Wrap(err, "failed sending request")
+	}
+
+	reply, err := c.getReply(seq)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("reply: %+v\n", reply)
+
+	if reply.Header.Type == syscall.NLMSG_ERROR {
+		err := ParseNetlinkError(reply.Data)
+		if err == NLE_SUCCESS {
+			return nil
+		}
+
+		if len(reply.Data) > sizeofAuditStatus {
+			replyStatus := &AuditStatus{}
+			replyStatus.fromWireFormat(reply.Data[4:])
+			fmt.Printf("%+v\n", replyStatus)
+			fmt.Println("failure:", syscall.Errno(replyStatus.Failure))
+			return syscall.Errno(replyStatus.Failure)
+		}
+		return err
+	}
+
+	return errors.Errorf("invalid response, bad type %d", reply.Header.Type)
 }
 
 // SetPID sends a netlink message to the kernel telling it the PID of
 // netlink listener that should receive the audit messages.
 // https://github.com/linux-audit/audit-userspace/blob/990aa27ccd02f9743c4f4049887ab89678ab362a/lib/libaudit.c#L432-L464
 func (c *AuditClient) SetPID(pid int) error {
+	netlinkPID := uint32(pid)
+	if netlinkPID == 0 {
+		netlinkPID = c.netlink.pid
+	}
+
 	status := AuditStatus{
-		Mask: AuditStatusPID,
+		Mask:    AuditStatusEnabled | AuditStatusPID,
 		Enabled: 1,
-		PID:  uint32(pid),
+		PID:     netlinkPID,
 	}
-
-	msg := syscall.NetlinkMessage{
-		Header: syscall.NlMsghdr{
-			Type:  AuditSet,
-			Flags: syscall.NLM_F_REQUEST | syscall.NLM_F_ACK,
-			Pid: uint32(pid),
-		},
-		Data: status.toWireFormat(),
-	}
-
-	_, err := c.netlink.Send(msg)
-	// XXX: This should use sequence number to look for an ACK to our message.
-	return err
+	return c.Set(status)
 }
 
 // RawAuditMessage is a raw audit message received from the kernel.
