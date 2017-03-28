@@ -56,29 +56,50 @@ func (c *AuditClient) GetStatus() (*AuditStatus, error) {
 		Data: nil,
 	}
 
+	// Send AUDIT_GET message to the kernel.
 	seq, err := c.netlink.Send(msg)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed sending request")
 	}
 
-	reply, err := c.getReply(seq)
+	// Get the ack message which is a NLMSG_ERROR type whose error code is SUCCESS.
+	ack, err := c.getReply(seq)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("ACK: %+v\n", ack)
 
-	if reply.Header.Flags != (syscall.NLM_F_REQUEST | syscall.NLM_F_ACK) {
-		return nil, errors.Errorf("invalid response, bad header flags 0x%X", reply.Header.Flags)
+	if ack.Header.Type != syscall.NLMSG_ERROR {
+		return nil, errors.Errorf("unexpected ACK to GET, type=%d", ack.Header.Type)
 	}
 
-	if reply.Header.Type == syscall.NLMSG_ERROR {
-		err := ParseNetlinkError(reply.Data)
-		if err == NLE_SUCCESS {
-			return nil, nil
+	if err := ParseNetlinkError(ack.Data); err != NLE_SUCCESS {
+		if len(ack.Data) >= 16 {
+			// Read the third int, its the failure code.
+			errno := syscall.Errno(binary.LittleEndian.Uint32(ack.Data[3*4:]))
+			return nil, errno
 		}
 		return nil, err
 	}
 
-	return nil, errors.Errorf("invalid response, bad type %d", reply.Header.Type)
+	// Get the audit_status reply message. It has the same sequence number as
+	// our original request.
+	reply, err := c.getReply(seq)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("REPLY: %+v\n", reply)
+
+	if reply.Header.Type != AuditGet {
+		return nil, errors.Errorf("unexpected reply to GET, type%d", reply.Header.Type)
+	}
+
+	replyStatus := &AuditStatus{}
+	if err := replyStatus.fromWireFormat(reply.Data); err != nil {
+		return nil, err
+	}
+
+	return replyStatus, nil
 }
 
 // getReply reads from the netlink socket and find the message with the given
@@ -106,11 +127,17 @@ func (c *AuditClient) getReply(seq uint32) (*syscall.NetlinkMessage, error) {
 		break
 	}
 
-	for _, msg := range msgs {
+	var rtn *syscall.NetlinkMessage
+	for i, msg := range msgs {
 		// Find matching sequence number.
 		if msg.Header.Seq == seq {
-			return &msg, nil
+			//return &msg, nil
+			rtn = &msg
 		}
+		fmt.Printf("resp %d: %+v\n", i, msg)
+	}
+	if rtn != nil {
+		return rtn, nil
 	}
 
 	return nil, errors.New("no reply received")
